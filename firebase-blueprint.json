@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "Order": {
+      "title": "Order",
+      "description": "Customer orders for Indomi Nite",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "address": { "type": "string" },
+        "items": { "type": "array" },
+        "total": { "type": "number" },
+        "status": { "type": "string", "enum": ["diterima", "dimasak", "diantar", "selesai", "dibatalkan"] },
+        "paymentMethod": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "items", "total", "status", "timestamp"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Menu items and stock levels",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "stock": { "type": "number" },
+        "unit": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" }
+      },
+      "required": ["id", "name", "stock", "price"]
+    },
+    "AppFeedback": {
+      "title": "App Feedback",
+      "description": "User feedback for the application",
+      "type": "object",
+      "properties": {
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" }
+      },
+      "required": ["rating", "comment", "timestamp"]
+    }
+  },
+  "firestore": {
+    "orders": {
+      "schema": "Order",
+      "description": "Collection of customer orders"
+    },
+    "inventory": {
+      "schema": "InventoryItem",
+      "description": "Collection of menu items and stock"
+    },
+    "app_feedback": {
+      "schema": "AppFeedback",
+      "description": "Collection of user feedback"
+    }
+  }
+}

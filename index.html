@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      // Ultimate fix for "Cannot set property fetch of #<Window> which has only a getter"
+      (function() {
+        var _fetch = window.fetch;
+        try {
+          Object.defineProperty(window, 'fetch', {
+            get: function() { return _fetch; },
+            set: function(v) { 
+              console.log('window.fetch was overwritten');
+              _fetch = v; 
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn('Manual fetch fix failed:', e);
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>My Google AI Studio App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

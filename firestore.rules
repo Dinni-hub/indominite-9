@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner() {
+      let email = request.auth.token.email;
+      let isEmailOwner = isAuthenticated() && email != null && email.lower() == 'indominite@gmail.com';
+      let hasSession = exists(/databases/$(database)/documents/owner_sessions/$(request.auth.uid));
+      return isAuthenticated() && (isEmailOwner || hasSession);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidOrder(data) {
+      return data.keys().hasAll(['customerName', 'items', 'total', 'status', 'timestamp']) &&
+             data.customerName is string && data.customerName.size() > 0 && data.customerName.size() < 100 &&
+             data.items is list && data.items.size() > 0 && data.items.size() < 50 &&
+             data.total is number && data.total >= 0 &&
+             data.status in ['diterima', 'dimasak', 'diantar', 'selesai', 'dibatalkan'] &&
+             (!('customerPhone' in data) || data.customerPhone == null || (data.customerPhone is string && data.customerPhone.size() < 20)) &&
+             (!('customerEmail' in data) || data.customerEmail == null || (data.customerEmail is string && data.customerEmail.size() < 100)) &&
+             (!('customerAddress' in data) || data.customerAddress == null || (data.customerAddress is string && data.customerAddress.size() < 500)) &&
+             (!('paymentMethod' in data) || data.paymentMethod == null || (data.paymentMethod is string && data.paymentMethod.size() < 50)) &&
+             (!('sessionId' in data) || data.sessionId == null || (data.sessionId is string && data.sessionId.size() < 100)) &&
+             (!('uid' in data) || data.uid == null || (data.uid is string && data.uid.size() < 100)) &&
+             (!('id' in data) || data.id == null || (data.id is string && data.id.size() < 50)) &&
+             (!('paymentStatus' in data) || data.paymentStatus == null || data.paymentStatus in ['belum', 'lunas']) &&
+             (!('isManual' in data) || data.isManual == null || data.isManual is bool) &&
+             (!('manualProfit' in data) || data.manualProfit == null || data.manualProfit is number) &&
+             (!('calculatedProfit' in data) || data.calculatedProfit == null || data.calculatedProfit is number) &&
+             (!('rating' in data) || data.rating == null || data.rating is number) &&
+             (!('feedback' in data) || data.feedback == null || data.feedback is string) &&
+             (!('appRating' in data) || data.appRating == null || data.appRating is number) &&
+             (!('appFeedback' in data) || data.appFeedback == null || data.appFeedback is string);
+    }
+
+    function isValidInventoryItem(data) {
+      return data.keys().hasAll(['name', 'stock']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.stock is number && data.stock >= 0 &&
+             (!('price' in data) || data.price == null || (data.price is number && data.price >= 0)) &&
+             (!('category' in data) || data.category == null || (data.category is string && data.category.size() < 50)) &&
+             (!('unit' in data) || data.unit == null || (data.unit is string && data.unit.size() < 20));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    // Orders Collection
+    match /orders/{orderId} {
+      // Anyone can create an order, but it must be valid
+      allow create: if isValidOrder(request.resource.data);
+      
+      // Owner can read, update, delete all orders
+      allow read, update, delete: if isOwner();
+      
+      // Customers can read their own orders if they query by their uid or email
+      allow list: if isAuthenticated() && 
+                  (isOwner() || 
+                   (('email' in request.auth.token) && ('customerEmail' in resource.data) && request.auth.token.email == resource.data.customerEmail) || 
+                   (('uid' in resource.data) && resource.data.uid == request.auth.uid));
+
+      
+      // Customers can read a specific order if they know its ID (for guest access)
+      allow get: if true;
+      
+      // Customers can update their own orders (e.g., to add rating/feedback)
+      // We restrict updates to only the rating, feedback, appRating, and appFeedback fields
+      allow update: if isOwner() || 
+                    (isAuthenticated() && ('uid' in resource.data) && resource.data.uid == request.auth.uid &&
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'feedback', 'appRating', 'appFeedback', 'status']) &&
+                     (!('rating' in request.resource.data) || (request.resource.data.rating is number && request.resource.data.rating >= 1 && request.resource.data.rating <= 5)) &&
+                     (!('feedback' in request.resource.data) || (request.resource.data.feedback is string && request.resource.data.feedback.size() < 1000)) &&
+                     (!('appRating' in request.resource.data) || (request.resource.data.appRating is number && request.resource.data.appRating >= 1 && request.resource.data.appRating <= 5)) &&
+                     (!('appFeedback' in request.resource.data) || (request.resource.data.appFeedback is string && request.resource.data.appFeedback.size() < 1000)) &&
+                     (!('status' in request.resource.data) || request.resource.data.status == 'dibatalkan' || request.resource.data.status == resource.data.status));
+    }
+    
+    // Inventory Collection
+    match /inventory/{itemId} {
+      // Anyone can read the menu (inventory) to see what's available
+      allow read: if true;
+      
+      // Only the owner can add or delete menu items
+      allow create: if isOwner() && isValidInventoryItem(request.resource.data);
+      allow delete: if isOwner();
+      
+      // Anyone can update the stock (for order placement), but only owner can update other fields
+      allow update: if isOwner() || 
+                    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock']) &&
+                     request.resource.data.stock is number && request.resource.data.stock >= 0);
+    }
+
+    // App Feedback Collection
+    match /app_feedback/{feedbackId} {
+      // Anyone can create feedback
+      allow create: if request.resource.data.keys().hasAll(['rating', 'comment', 'timestamp', 'userName', 'userEmail']) &&
+                     request.resource.data.rating is number && request.resource.data.rating >= 1 && request.resource.data.rating <= 5 &&
+                     request.resource.data.comment is string && request.resource.data.comment.size() < 1000 &&
+                     request.resource.data.timestamp is timestamp &&
+                     request.resource.data.userName is string && request.resource.data.userName.size() < 100 &&
+                     request.resource.data.userEmail is string && request.resource.data.userEmail.size() < 100 &&
+                     (!('id' in request.resource.data) || request.resource.data.id is string);
+      
+      // Only the owner can read or delete feedbacks
+      allow read, delete: if isOwner();
+      
+      // No updates allowed for feedback
+      allow update: if false;
+    }
+    
+    // Owner Sessions Collection
+    match /owner_sessions/{sessionId} {
+      allow read: if isAuthenticated() && request.auth.uid == sessionId;
+      allow create, update: if isAuthenticated() && request.auth.uid == sessionId && 
+                             request.resource.data.secret == 'IndominiteSecret2026';
+    }
+    
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
