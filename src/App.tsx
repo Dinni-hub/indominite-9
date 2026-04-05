@@ -60,6 +60,7 @@ interface Order {
   isManual?: boolean;
   manualProfit?: number;
   calculatedProfit?: number;
+  isReadyForNotify?: boolean;
 }
 
 interface AppFeedback {
@@ -70,6 +71,65 @@ interface AppFeedback {
   userName?: string;
   userEmail?: string;
 }
+
+const getNextOrderNumber = async (isFirebaseConfigured: boolean, orders: Order[]) => {
+  let nextNumber = 1;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  if (isFirebaseConfigured) {
+    try {
+      // Query Firebase for the latest order today
+      const q = query(
+        collection(db, 'orders'), 
+        where('timestamp', '>=', todayStart),
+        orderBy('timestamp', 'desc'),
+        limit(1)
+      );
+      const querySnapshot = await getDocs(q);
+      
+      if (!querySnapshot.empty) {
+        const lastOrder = querySnapshot.docs[0].data();
+        if (lastOrder.orderNumber) {
+          const lastNum = parseInt(lastOrder.orderNumber, 10);
+          if (!isNaN(lastNum)) {
+            nextNumber = lastNum + 1;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching last order number from Firebase:", err);
+      // Fallback to local filtering if Firebase fails
+      const todayOrders = orders.filter(o => {
+        const orderTime = o.timestamp instanceof Date ? o.timestamp : new Date(o.timestamp);
+        return orderTime >= todayStart;
+      });
+      const maxOrderNumber = todayOrders.reduce((max, o) => {
+        if (o.orderNumber) {
+          const num = parseInt(o.orderNumber, 10);
+          return !isNaN(num) && num > max ? num : max;
+        }
+        return max;
+      }, 0);
+      nextNumber = maxOrderNumber + 1;
+    }
+  } else {
+    // Offline/Local Fallback
+    const todayOrders = orders.filter(o => {
+      const orderTime = o.timestamp instanceof Date ? o.timestamp : new Date(o.timestamp);
+      return orderTime >= todayStart;
+    });
+    const maxOrderNumber = todayOrders.reduce((max, o) => {
+      if (o.orderNumber) {
+        const num = parseInt(o.orderNumber, 10);
+        return !isNaN(num) && num > max ? num : max;
+      }
+      return max;
+    }, 0);
+    nextNumber = maxOrderNumber + 1;
+  }
+  return nextNumber.toString().padStart(4, '0');
+};
 
 const OWNER_WHATSAPP_NUMBER = '628123456789'; // GANTI DENGAN NOMOR WA OWNER (Gunakan kode negara, misal 628...)
 
@@ -637,6 +697,7 @@ export default function App() {
   });
   const [ratingOrder, setRatingOrder] = useState<Order | null>(null);
   const [showAppFeedbackModal, setShowAppFeedbackModal] = useState(false);
+  const [currentOrderFirebaseKey, setCurrentOrderFirebaseKey] = useState<string | null>(null);
   const [lastPlacedSessionId, setLastPlacedSessionId] = useState<string | null>(null);
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
@@ -889,6 +950,26 @@ export default function App() {
   const [paymentMethod, setPaymentMethod] = useState('TUNAI');
 
   const [newOrderAlert, setNewOrderAlert] = useState<any | null>(null);
+  const notifiedOrderIds = useRef<Set<string>>(new Set());
+
+  // Initialize notifiedOrderIds from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('app_notified_orders');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(id => notifiedOrderIds.current.add(id));
+        }
+      }
+    } catch (e) {
+      console.error("Error loading notified orders", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('app_notified_orders', JSON.stringify(Array.from(notifiedOrderIds.current)));
+  }, [newOrderAlert]); // Update whenever a new alert is shown or cleared
   const [feedbacks, setFeedbacks] = useState<AppFeedback[]>(() => {
     try {
       const saved = localStorage.getItem('app_feedbacks');
@@ -1037,27 +1118,45 @@ export default function App() {
             return final;
           });
 
-          // Check for new orders for owner alert
-          if (!snapshot.empty) {
-            const newestOrder = ordersList[0];
-            if (newestOrder && newestOrder.status === 'diterima') {
-              setNewOrderAlert({
-                customerName: newestOrder.customerName,
-                total: newestOrder.total
-              });
+          // Check for new orders for owner alert using docChanges
+          // This ensures we only trigger when isReadyForNotify is true
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added' || change.type === 'modified') {
+              const orderData = change.doc.data() as any;
+              const orderId = String(orderData.id || change.doc.id);
               
-              try {
-                if (!(window as any)._orderAudio) {
-                  const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-                  audio.loop = true;
-                  audio.play().catch(e => console.log("Audio play blocked", e));
-                  (window as any)._orderAudio = audio;
+              // Only trigger if isReadyForNotify is true
+              // and if we haven't notified for this ID yet (Anti-Duplikat)
+              if (orderData.isReadyForNotify === true && !notifiedOrderIds.current.has(orderId)) {
+                notifiedOrderIds.current.add(orderId);
+                localStorage.setItem('app_notified_orders', JSON.stringify(Array.from(notifiedOrderIds.current)));
+                
+                // Only show alert if it's not the initial load of old orders
+                // We check if the order is recent (within last 15 minutes to be safe since feedback might take time)
+                const rawTimestamp = orderData.timestamp;
+                const orderTime = rawTimestamp ? (rawTimestamp.toDate ? rawTimestamp.toDate() : new Date(rawTimestamp)) : new Date();
+                const isRecent = (new Date().getTime() - orderTime.getTime()) < 15 * 60 * 1000;
+
+                if (isRecent) {
+                  setNewOrderAlert({
+                    customerName: orderData.customerName,
+                    total: orderData.total
+                  });
+                  
+                  try {
+                    if (!(window as any)._orderAudio) {
+                      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+                      audio.loop = true;
+                      audio.play().catch(e => console.log("Audio play blocked", e));
+                      (window as any)._orderAudio = audio;
+                    }
+                  } catch (e) {
+                    console.log("Audio play failed", e);
+                  }
                 }
-              } catch (e) {
-                console.log("Audio play failed", e);
               }
             }
-          }
+          });
         }, (error) => handleFirestoreError(error, OperationType.GET, 'orders'));
       } else if (currentUser) {
         let ordersQuery;
@@ -1230,7 +1329,7 @@ export default function App() {
 
   // Calculate stats from orders
   const { totalRevenue, totalOrders, revenueToday } = useMemo(() => {
-    const validOrders = orders.filter(o => o.status === 'selesai');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
     const total = validOrders.reduce((sum, order) => sum + order.total, 0);
     
     const today = new Date().toDateString();
@@ -1248,7 +1347,7 @@ export default function App() {
     setView('detail');
   };
 
-  const handlePlaceOrder = (name: string, phone: string, email: string, orderAddress: string) => {
+  const handlePlaceOrder = async (name: string, phone: string, email: string, orderAddress: string) => {
     if (isPlacingOrderRef.current) return;
     if (!cart || cart.length === 0) return;
     
@@ -1260,19 +1359,11 @@ export default function App() {
     setCustomerEmail(email);
     setAddress(orderAddress);
 
-    // 1. Create Order Record
-    const baseOrderCount = orders.length;
+    // 1. Calculate Order Number (Reset Daily)
+    const orderNumber = await getNextOrderNumber(isFirebaseConfigured, orders);
     const sessionId = Date.now().toString();
     setLastPlacedSessionId(sessionId);
-    const maxOrderNumber = orders.reduce((max, o) => {
-      if (o.orderNumber) {
-        const num = parseInt(o.orderNumber, 10);
-        return !isNaN(num) && num > max ? num : max;
-      }
-      return max;
-    }, 0);
-    const nextNumber = maxOrderNumber + 1;
-    const orderNumber = nextNumber.toString().padStart(4, '0');
+    const baseOrderCount = orders.length;
 
     const newOrder: Order = {
       id: `${(baseOrderCount + 1).toString().padStart(4, '0')}-${sessionId.slice(-4)}`,
@@ -1288,7 +1379,8 @@ export default function App() {
       total: cart.reduce((sum, item) => sum + item.totalPrice, 0),
       timestamp: new Date(),
       status: 'diterima',
-      paymentStatus: 'belum'
+      paymentStatus: 'belum',
+      isReadyForNotify: false
     };
     
     const newOrders = [newOrder];
@@ -1371,6 +1463,8 @@ export default function App() {
             ...order,
             timestamp: serverTimestamp()
           });
+          
+          setCurrentOrderFirebaseKey(docRef.id);
           
           // Update local order with firebaseKey
           setOrders(prev => {
@@ -1502,6 +1596,17 @@ export default function App() {
       localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
     }
     showNotification("Pesanan telah dibatalkan.");
+  };
+
+  const handleNotifyOrder = async (orderFirebaseKey: string) => {
+    if (isFirebaseConfigured && orderFirebaseKey) {
+      try {
+        const orderRef = doc(db, 'orders', orderFirebaseKey);
+        await updateDoc(orderRef, { isReadyForNotify: true });
+      } catch (err) {
+        console.error("Failed to update isReadyForNotify:", err);
+      }
+    }
   };
 
   const handleRateOrder = async (orderId: string, rating: number, feedback: string) => {
@@ -2035,9 +2140,19 @@ export default function App() {
         )}
         <AppFeedbackModal
           show={showAppFeedbackModal}
-          onClose={() => setShowAppFeedbackModal(false)}
+          onClose={async () => {
+            if (currentOrderFirebaseKey) {
+              await handleNotifyOrder(currentOrderFirebaseKey);
+              setCurrentOrderFirebaseKey(null);
+            }
+            setShowAppFeedbackModal(false);
+          }}
           onSubmit={async (rating, feedback) => {
             await handleAddAppFeedback(rating, feedback);
+            if (currentOrderFirebaseKey) {
+              await handleNotifyOrder(currentOrderFirebaseKey);
+              setCurrentOrderFirebaseKey(null);
+            }
           }}
         />
       </div>
@@ -2247,7 +2362,7 @@ function OwnerScreen({
 
   // Calculate total profit based on HPP
   const totalProfit = useMemo(() => {
-    const validOrders = orders.filter(o => o.status === 'selesai');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
     return validOrders.reduce((totalProfit, order) => {
       if (order.isManual) {
         return totalProfit + (order.manualProfit || 0);
@@ -2265,7 +2380,7 @@ function OwnerScreen({
   }, [orders]);
 
   const filteredReportData = useMemo(() => {
-    const validOrders = orders.filter(o => o.status === 'selesai');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
     const [year, month, day] = reportFilterDate.split('-').map(Number);
     const selectedDate = new Date(year, month - 1, day);
     
@@ -2318,22 +2433,14 @@ function OwnerScreen({
     if (reportFilterType === 'hari') {
       filteredOrders = filteredOrders.filter(o => o.timestamp.toDateString() === selectedDate.toDateString());
       
-      // Group by hour
-      const hourlySales: { [key: number]: number } = {};
-      const hourlyProfit: { [key: number]: number } = {};
-      
-      filteredOrders.forEach(order => {
-        const h = order.timestamp.getHours();
-        hourlySales[h] = (hourlySales[h] || 0) + order.total;
-        hourlyProfit[h] = (hourlyProfit[h] || 0) + order.calculatedProfit;
-      });
+      const totalSales = filteredOrders.reduce((sum, o) => sum + o.total, 0);
+      const totalProfit = filteredOrders.reduce((sum, o) => sum + o.calculatedProfit, 0);
 
-      const hours = Array.from({ length: 24 }, (_, i) => i);
-      chartData = hours.map(h => ({
-        name: `${h.toString().padStart(2, '0')}:00`,
-        sales: hourlySales[h] || 0,
-        profit: hourlyProfit[h] || 0,
-      }));
+      chartData = [{
+        name: selectedDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }),
+        sales: totalSales,
+        profit: totalProfit,
+      }];
     } else if (reportFilterType === 'minggu') {
       // Get start of week (Sunday)
       const startOfWeek = new Date(selectedDate);
@@ -2365,23 +2472,14 @@ function OwnerScreen({
     } else if (reportFilterType === 'bulan') {
       filteredOrders = filteredOrders.filter(o => o.timestamp.getMonth() === selectedDate.getMonth() && o.timestamp.getFullYear() === selectedDate.getFullYear());
       
-      // Group by day of month
-      const daysInMonth = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0).getDate();
-      const dailySales: { [key: number]: number } = {};
-      const dailyProfit: { [key: number]: number } = {};
-      
-      filteredOrders.forEach(order => {
-        const d = order.timestamp.getDate();
-        dailySales[d] = (dailySales[d] || 0) + order.total;
-        dailyProfit[d] = (dailyProfit[d] || 0) + order.calculatedProfit;
-      });
-      
-      const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-      chartData = days.map(d => ({
-        name: d.toString(),
-        sales: dailySales[d] || 0,
-        profit: dailyProfit[d] || 0,
-      }));
+      const totalSales = filteredOrders.reduce((sum, o) => sum + o.total, 0);
+      const totalProfit = filteredOrders.reduce((sum, o) => sum + o.calculatedProfit, 0);
+
+      chartData = [{
+        name: selectedDate.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }),
+        sales: totalSales,
+        profit: totalProfit,
+      }];
     }
     
     const revenue = filteredOrders.reduce((sum, order) => sum + order.total, 0);
@@ -2424,15 +2522,7 @@ function OwnerScreen({
       }
     }
     
-    const maxOrderNumber = orders.reduce((max, o) => {
-      if (o.orderNumber) {
-        const num = parseInt(o.orderNumber, 10);
-        return !isNaN(num) && num > max ? num : max;
-      }
-      return max;
-    }, 0);
-    const nextNumber = maxOrderNumber + 1;
-    const orderNumber = nextNumber.toString().padStart(4, '0');
+    const orderNumber = await getNextOrderNumber(isFirebaseConfigured, orders);
 
     const newOrder: Order = {
       id: `ADJ-${Date.now()}`,
@@ -2633,15 +2723,7 @@ function OwnerScreen({
       
       setManualOrderError(null);
       
-      const maxOrderNumber = orders.reduce((max, o) => {
-        if (o.orderNumber) {
-          const num = parseInt(o.orderNumber, 10);
-          return !isNaN(num) && num > max ? num : max;
-        }
-        return max;
-      }, 0);
-      const nextNumber = maxOrderNumber + 1;
-      const orderNumber = nextNumber.toString().padStart(4, '0');
+      const orderNumber = await getNextOrderNumber(isFirebaseConfigured, orders);
 
       const newOrder: Order = {
         id: `MANUAL-${Date.now()}`,
@@ -2829,7 +2911,7 @@ function OwnerScreen({
   const dailyData = useMemo(() => {
     const now = new Date();
     const today = now.toDateString();
-    const todayOrders = orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === today);
+    const todayOrders = orders.filter(o => o.status !== 'dibatalkan' && o.timestamp.toDateString() === today);
     
     // Group by hour
     const hourlySales: { [key: number]: number } = {};
@@ -2866,7 +2948,7 @@ function OwnerScreen({
     csvContent += `Tanggal Filter: ${date} (${reportFilterType})\n\n`;
     csvContent += "ID Pesanan,Pelanggan,Menu,Total,Waktu,Status\n";
     
-    const validOrders = orders.filter(o => o.status === 'selesai');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
     let filteredOrders = validOrders;
     
     if (reportFilterType === 'hari') {
@@ -2958,7 +3040,7 @@ function OwnerScreen({
       const year = startYear;
       
       const monthSales = orders.filter(o => 
-        o.status === 'selesai' &&
+        o.status !== 'dibatalkan' &&
         o.timestamp.getMonth() === monthIdx && 
         o.timestamp.getFullYear() === year
       ).reduce((sum, order) => sum + order.total, 0);
@@ -3996,25 +4078,42 @@ function OwnerScreen({
               </div>
               <div className="h-80 w-full overflow-hidden">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={filteredReportData.chartData.length > 0 ? filteredReportData.chartData : [{name: 'Data', sales: 0, profit: 0}]} margin={{ top: 20, right: 10, left: 10, bottom: 20 }} barCategoryGap={2} barGap={2}>
+                  <BarChart 
+                    data={filteredReportData.chartData.length > 0 ? filteredReportData.chartData : [{name: 'Data', sales: 0, profit: 0}]} 
+                    margin={{ top: 20, right: 10, left: 10, bottom: 20 }} 
+                    barCategoryGap={reportFilterType === 'bulan' || reportFilterType === 'hari' ? "15%" : "20%"}
+                    barGap={reportFilterType === 'bulan' ? 2 : 2}
+                  >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E5E5" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#999'}} minTickGap={5} />
+                    <XAxis 
+                      dataKey="name" 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{fontSize: 10, fill: '#999'}} 
+                      minTickGap={reportFilterType === 'bulan' ? 15 : 5} 
+                    />
                     <YAxis 
                       axisLine={false} 
                       tickLine={false} 
                       tick={{fontSize: 10, fill: '#999'}} 
+                      domain={[0, 'auto']}
+                      allowDataOverflow={false}
                       tickFormatter={(value) => {
-                        if (value >= 1000000) return `${(value / 1000000).toFixed(1)}jt`;
-                        if (value <= -1000000) return `${(value / 1000000).toFixed(1)}jt`;
-                        if (value >= 1000) return `${(value / 1000).toFixed(0)}rb`;
-                        if (value <= -1000) return `${(value / 1000).toFixed(0)}rb`;
+                        if (Math.abs(value) >= 1000000) {
+                          const val = value / 1000000;
+                          return `${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)}jt`;
+                        }
+                        if (Math.abs(value) >= 1000) {
+                          const val = value / 1000;
+                          return `${val.toFixed(0)}rb`;
+                        }
                         return `${value}`;
                       }} 
                     />
                     <Tooltip formatter={(value: number) => `Rp ${(value || 0).toLocaleString()}`} contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)'}} cursor={{fill: 'transparent'}} />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                    <Bar dataKey="sales" name="Omzet" fill="#D4AF37" maxBarSize={64} radius={[4, 4, 4, 4]} />
-                    <Bar dataKey="profit" name="Profit" fill="#16a34a" maxBarSize={64} radius={[4, 4, 4, 4]} />
+                    <Bar dataKey="sales" name="Omzet" fill="#D4AF37" maxBarSize={reportFilterType === 'bulan' || reportFilterType === 'hari' ? 80 : 64} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="profit" name="Profit" fill="#16a34a" maxBarSize={reportFilterType === 'bulan' || reportFilterType === 'hari' ? 80 : 64} radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -6799,9 +6898,10 @@ function OrdersScreen({ onBack, onGoHome, orders, cart, customerName, currentUse
   );
 }
 
-function AppFeedbackModal({ show, onClose, onSubmit }: { show: boolean, onClose: () => void, onSubmit: (rating: number, feedback: string) => Promise<void> }) {
+function AppFeedbackModal({ show, onClose, onSubmit }: { show: boolean, onClose: () => Promise<void>, onSubmit: (rating: number, feedback: string) => Promise<void> }) {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!show) return null;
   
@@ -6840,20 +6940,31 @@ function AppFeedbackModal({ show, onClose, onSubmit }: { show: boolean, onClose:
           maxLength={999}
         />
         
-        <button 
-          onClick={async () => {
-            if (rating > 0) {
-              await onSubmit(rating, feedback);
-              setRating(0);
-              setFeedback('');
-              onClose();
-            }
-          }}
-          disabled={rating === 0}
-          className={`w-full py-4 rounded-2xl font-bold ${rating > 0 ? 'bg-[#3D2B1F] text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
-        >
-          Kirim
-        </button>
+        <div className="flex flex-col gap-3">
+          <button 
+            onClick={async () => {
+              if (rating > 0) {
+                setIsSubmitting(true);
+                await onSubmit(rating, feedback);
+                setRating(0);
+                setFeedback('');
+                setIsSubmitting(false);
+                onClose();
+              }
+            }}
+            disabled={rating === 0 || isSubmitting}
+            className={`w-full py-4 rounded-2xl font-bold ${rating > 0 ? 'bg-[#3D2B1F] text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+          >
+            {isSubmitting ? 'Mengirim...' : 'Kirim'}
+          </button>
+          
+          <button 
+            onClick={onClose}
+            className="w-full py-3 rounded-2xl font-bold text-[#3D2B1F]/40 text-sm hover:bg-stone-50 transition-colors"
+          >
+            Lain Kali Saja (Skip)
+          </button>
+        </div>
       </motion.div>
     </div>
   );
