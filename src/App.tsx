@@ -61,6 +61,7 @@ interface Order {
   manualProfit?: number;
   calculatedProfit?: number;
   isReadyForNotify?: boolean;
+  isDeleted?: boolean;
 }
 
 interface AppFeedback {
@@ -491,23 +492,12 @@ const ALL_MENU_ITEMS = [
 ];
 
 const calculateItemPrice = (itemName: string, basePrice: number, toppings: string[]) => {
-  const isRendang = itemName.includes('Rendang');
   const telurCount = toppings.filter(t => t.toLowerCase().includes('telur')).length;
   const sosisCount = toppings.filter(t => t.toLowerCase().includes('sosis')).length;
 
   let total = basePrice;
-  let remainingTelur = telurCount;
-  let remainingSosis = sosisCount;
-
-  // Special case for Rendang Sosis Telur based on the table
-  if (isRendang && remainingTelur > 0 && remainingSosis > 0) {
-    total = 10000;
-    remainingTelur--;
-    remainingSosis--;
-  }
-
-  total += remainingTelur * 3000;
-  total += remainingSosis * 1000;
+  total += telurCount * 3000;
+  total += sosisCount * 1000;
 
   return total;
 };
@@ -525,50 +515,11 @@ const getItemHPP = (itemName: string, toppings: string[] = []) => {
   let bahan = 0;
 
   if (isGoreng) {
-    bahan = 4093;
-    if (telurCount > 0 && sosisCount > 0) {
-      bahan = 7875;
-      bahan += (telurCount - 1) * 3000;
-      bahan += (sosisCount - 1) * 782;
-    } else if (telurCount > 0) {
-      bahan = 7093;
-      bahan += (telurCount - 1) * 3000;
-      bahan += sosisCount * 782;
-    } else if (sosisCount > 0) {
-      bahan = 4875;
-      bahan += (sosisCount - 1) * 782;
-      bahan += telurCount * 3000;
-    }
+    bahan = 4093 + (telurCount * 3000) + (sosisCount * 782);
   } else if (isSoto) {
-    bahan = 4356;
-    if (telurCount > 0 && sosisCount > 0) {
-      bahan = 8138;
-      bahan += (telurCount - 1) * 3000;
-      bahan += (sosisCount - 1) * 782;
-    } else if (telurCount > 0) {
-      bahan = 7356;
-      bahan += (telurCount - 1) * 3000;
-      bahan += sosisCount * 782;
-    } else if (sosisCount > 0) {
-      bahan = 5138;
-      bahan += (sosisCount - 1) * 782;
-      bahan += telurCount * 3000;
-    }
+    bahan = 4356 + (telurCount * 3000) + (sosisCount * 782);
   } else if (isRendang) {
-    bahan = 4203;
-    if (telurCount > 0 && sosisCount > 0) {
-      bahan = 7985;
-      bahan += (telurCount - 1) * 1002;
-      bahan += (sosisCount - 1) * 1002;
-    } else if (telurCount > 0) {
-      bahan = 5205;
-      bahan += (telurCount - 1) * 1002;
-      bahan += sosisCount * 1002;
-    } else if (sosisCount > 0) {
-      bahan = 5205;
-      bahan += (sosisCount - 1) * 1002;
-      bahan += telurCount * 1002;
-    }
+    bahan = 4203 + (telurCount * 3000) + (sosisCount * 782);
   } else if (isTelurGulung) {
     if (itemName.includes('Sosis')) {
       bahan = 562;
@@ -662,22 +613,21 @@ export default function App() {
   useEffect(() => {
     const handlePopState = (event: PopStateEvent) => {
       if (event.state && event.state.view) {
-        if (event.state.view === 'home') {
-          setShowExitConfirmation(true);
-          // Push state back to keep 'home' in history
-          window.history.pushState({ view: 'home' }, '');
-        } else {
-          setView(event.state.view);
-        }
+        setView(event.state.view);
       } else {
-        // If no state, assume welcome or home
-        setView('welcome');
+        // If no state, they might be trying to exit the app from the first page
+        if (view === 'home' || view === 'welcome') {
+          setShowExitConfirmation(true);
+          window.history.pushState({ view }, '');
+        } else {
+          setView('home');
+        }
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     if (window.history.state?.view !== view) {
@@ -1050,6 +1000,24 @@ export default function App() {
     return [];
   });
 
+  const [dismissedNotifs, setDismissedNotifs] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('app_dismissed_notifs');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error("Error parsing dismissed notifs", e);
+    }
+    return [];
+  });
+
+  const handleDismissNotif = (notifId: string) => {
+    setDismissedNotifs(prev => {
+      const updated = [...prev, notifId];
+      localStorage.setItem('app_dismissed_notifs', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   useEffect(() => {
     if (userRole !== 'owner' && orders.length > 0) {
       const prevOrders = prevOrdersRef.current;
@@ -1131,13 +1099,13 @@ export default function App() {
                 notifiedOrderIds.current.add(orderId);
                 localStorage.setItem('app_notified_orders', JSON.stringify(Array.from(notifiedOrderIds.current)));
                 
-                // Only show alert if it's not the initial load of old orders
-                // We check if the order is recent (within last 15 minutes to be safe since feedback might take time)
+                // We check if the order is recent (within last 2 hours to be safe since feedback might take time)
                 const rawTimestamp = orderData.timestamp;
                 const orderTime = rawTimestamp ? (rawTimestamp.toDate ? rawTimestamp.toDate() : new Date(rawTimestamp)) : new Date();
-                const isRecent = (new Date().getTime() - orderTime.getTime()) < 15 * 60 * 1000;
+                const isRecent = (new Date().getTime() - orderTime.getTime()) < 2 * 60 * 60 * 1000;
 
                 if (isRecent) {
+                  console.log('NOTIFIKASI DIPICU!', { customerName: orderData.customerName, orderId });
                   setNewOrderAlert({
                     customerName: orderData.customerName,
                     total: orderData.total
@@ -1329,7 +1297,7 @@ export default function App() {
 
   // Calculate stats from orders
   const { totalRevenue, totalOrders, revenueToday } = useMemo(() => {
-    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan' && !o.isDeleted);
     const total = validOrders.reduce((sum, order) => sum + order.total, 0);
     
     const today = new Date().toDateString();
@@ -1337,7 +1305,7 @@ export default function App() {
       .filter(o => o.timestamp.toDateString() === today)
       .reduce((sum, order) => sum + order.total, 0);
 
-    const realOrdersCount = validOrders.filter(o => !o.id.startsWith('ADJ-')).length;
+    const realOrdersCount = validOrders.filter(o => !String(o.id).startsWith('ADJ-')).length;
 
     return { totalRevenue: total, totalOrders: realOrdersCount, revenueToday: todayRevenue };
   }, [orders]);
@@ -1448,16 +1416,19 @@ export default function App() {
       }
     });
 
-    // 3. Update Local State Immediately (for responsiveness and guest support)
-    const updatedOrders = [...newOrders, ...orders];
-    setOrders(updatedOrders);
-    localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+    // 3. Update Local State Immediately (only if not using Firebase to avoid duplicates)
+    if (!isFirebaseConfigured) {
+      const updatedOrders = [...newOrders, ...orders];
+      setOrders(updatedOrders);
+      localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+    }
+    
     setInventory(newInventory);
     localStorage.setItem('app_inventory', JSON.stringify(newInventory));
 
     if (isFirebaseConfigured) {
       // 1. Add Orders to Firestore
-      Promise.all(newOrders.map(async (order) => {
+      await Promise.all(newOrders.map(async (order) => {
         try {
           const docRef = await addDoc(collection(db, 'orders'), {
             ...order,
@@ -1466,12 +1437,8 @@ export default function App() {
           
           setCurrentOrderFirebaseKey(docRef.id);
           
-          // Update local order with firebaseKey
-          setOrders(prev => {
-            const updated = prev.map(o => o.id === order.id && o.sessionId === order.sessionId ? { ...o, firebaseKey: docRef.id } : o);
-            localStorage.setItem('app_orders', JSON.stringify(updated));
-            return updated;
-          });
+          // No need to update local state here as onSnapshot will handle it
+          // and we want to avoid any potential duplication or race conditions
         } catch (err) {
           console.error("Failed to add order to Firestore:", err);
         }
@@ -1647,6 +1614,98 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const handleUpdateOrderStatus = async (orderId: string, status: 'diterima' | 'dimasak' | 'diantar' | 'selesai') => {
+    console.log("--- Update Order Status Start ---");
+    console.log("Updating order ID:", orderId, "to status:", status);
+    
+    const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
+    if (!order) {
+      console.error("Order not found in state:", orderId);
+      showNotification("Pesanan tidak ditemukan di data lokal.");
+      return;
+    }
+    
+    let actualId = order.firebaseKey || orderId;
+    
+    if (isFirebaseConfigured && auth.currentUser) {
+      try {
+        let orderRef = doc(db, 'orders', String(actualId));
+        
+        if (!order.firebaseKey && order.id) {
+          const q = query(collection(db, 'orders'), where('id', '==', order.id));
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+            orderRef = snapshot.docs[0].ref;
+            actualId = snapshot.docs[0].id;
+          } else {
+            const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
+            setOrders(updatedOrders);
+            localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+            showNotification("Status pesanan berhasil diperbarui (Lokal)");
+            return;
+          }
+        }
+
+        await updateDoc(orderRef, { status });
+        const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
+        setOrders(updatedOrders);
+        localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+        showNotification("Status pesanan berhasil diperbarui");
+      } catch (err: any) {
+        console.error("Error updating order:", err);
+        const errorCode = err.code || "unknown";
+        
+        if (errorCode === 'permission-denied' || errorCode === 'not-found') {
+          const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
+          setOrders(updatedOrders);
+          localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+          showNotification(`Status pesanan diperbarui secara lokal (${errorCode === 'permission-denied' ? 'Akses Dibatasi' : 'Data Cloud Tidak Ditemukan'})`);
+        } else {
+          showNotification(`Gagal memperbarui: ${err.message || errorCode}`);
+        }
+      }
+    } else {
+      const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
+      setOrders(updatedOrders);
+      localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+      showNotification("Status pesanan berhasil diperbarui (Mode Lokal)");
+    }
+  };
+
+  const handleEditOrder = async (orderId: string, updatedData: any) => {
+    const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
+    if (!order) return;
+    const actualId = String(order.firebaseKey || orderId);
+    if (isFirebaseConfigured) {
+      try {
+        const orderRef = doc(db, 'orders', actualId);
+        await updateDoc(orderRef, updatedData);
+        showNotification("Pesanan berhasil diperbarui");
+      } catch (err: any) {
+        console.error("Error editing order:", err);
+        if (err.code === 'permission-denied' || err.message?.toLowerCase().includes('permission-denied') || err.message?.toLowerCase().includes('insufficient permissions')) {
+          showNotification("Akses ditolak: Anda harus login sebagai owner yang terverifikasi.");
+        } else if (err.code === 'not-found' || err.message?.includes('not-found')) {
+          console.log("Order not found in Firestore, updating locally");
+          const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, ...updatedData } : o);
+          setOrders(updatedOrders);
+          localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+          showNotification("Pesanan berhasil diperbarui (Lokal)");
+        } else {
+          showNotification("Gagal memperbarui pesanan: " + (err.message || "Error tidak diketahui"));
+        }
+        handleFirestoreError(err, OperationType.WRITE, 'orders');
+      }
+    } else {
+      setOrders(prev => {
+        const final = prev.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, ...updatedData } : o);
+        localStorage.setItem('app_orders', JSON.stringify(final));
+        return final;
+      });
+      showNotification("Pesanan berhasil diperbarui");
+    }
+  };
+
   const handleDeleteOrder = async (orderId: string | string[]) => {
     const idsToDelete = Array.isArray(orderId) ? orderId : [orderId];
     
@@ -1656,20 +1715,67 @@ export default function App() {
         idsToDelete.forEach(id => {
           const order = orders.find(o => String(o.id) === String(id) || o.firebaseKey === id);
           const actualId = order?.firebaseKey || id;
-          batch.delete(doc(db, 'orders', actualId));
+          // Soft delete: set isDeleted to true
+          batch.update(doc(db, 'orders', actualId), { isDeleted: true });
         });
         await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'orders');
+      }
+    } else {
+      setOrders(prevOrders => {
+        const updatedOrders = prevOrders.map(o => 
+          (idsToDelete.includes(String(o.id)) || idsToDelete.includes(o.firebaseKey as string)) 
+          ? { ...o, isDeleted: true } 
+          : o
+        );
+        localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+        return updatedOrders;
+      });
+    }
+    showNotification(idsToDelete.length > 1 ? `${idsToDelete.length} pesanan dipindahkan ke Tempat Sampah.` : "Pesanan dipindahkan ke Tempat Sampah.");
+  };
+
+  const handleRestoreOrder = async (orderId: string) => {
+    if (isFirebaseConfigured) {
+      try {
+        const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
+        const actualId = order?.firebaseKey || orderId;
+        await updateDoc(doc(db, 'orders', actualId), { isDeleted: false });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'orders');
+      }
+    } else {
+      setOrders(prevOrders => {
+        const updatedOrders = prevOrders.map(o => 
+          (String(o.id) === String(orderId) || o.firebaseKey === orderId) 
+          ? { ...o, isDeleted: false } 
+          : o
+        );
+        localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
+        return updatedOrders;
+      });
+    }
+    showNotification("Pesanan telah dipulihkan.");
+  };
+
+  const handlePermanentDelete = async (orderId: string) => {
+    if (isFirebaseConfigured) {
+      try {
+        const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
+        const actualId = order?.firebaseKey || orderId;
+        await deleteDoc(doc(db, 'orders', actualId));
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, 'orders');
       }
     } else {
       setOrders(prevOrders => {
-        const updatedOrders = prevOrders.filter(o => !idsToDelete.includes(String(o.id)) && !idsToDelete.includes(o.firebaseKey as string));
+        const updatedOrders = prevOrders.filter(o => String(o.id) !== String(orderId) && o.firebaseKey !== orderId);
         localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
         return updatedOrders;
       });
     }
-    showNotification(idsToDelete.length > 1 ? `${idsToDelete.length} pesanan telah dihapus.` : "Pesanan telah dihapus.");
+    showNotification("Pesanan dihapus permanen.");
   };
 
   return (
@@ -1689,7 +1795,11 @@ export default function App() {
               <button 
                 onClick={() => {
                   setShowExitConfirmation(false);
-                  window.history.back();
+                  if (view === 'home') {
+                    setView('welcome');
+                  } else {
+                    window.history.back();
+                  }
                 }}
                 className="flex-1 py-4 bg-red-600 text-white rounded-2xl font-bold"
               >
@@ -1823,137 +1933,11 @@ export default function App() {
               setView('home');
             }}
             onOwnerLogin={handleOwnerLogin}
-            onUpdateOrderStatus={async (orderId, status) => {
-              console.log("--- Update Order Status Start ---");
-              console.log("Updating order ID:", orderId, "to status:", status);
-              
-              const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
-              if (!order) {
-                console.error("Order not found in state:", orderId);
-                showNotification("Pesanan tidak ditemukan di data lokal.");
-                return;
-              }
-              
-              let actualId = order.firebaseKey || orderId;
-              
-              if (isFirebaseConfigured && auth.currentUser) {
-                try {
-                  let orderRef = doc(db, 'orders', String(actualId));
-                  
-                  if (!order.firebaseKey && order.id) {
-                    const q = query(collection(db, 'orders'), where('id', '==', order.id));
-                    const snapshot = await getDocs(q);
-                    if (!snapshot.empty) {
-                      orderRef = snapshot.docs[0].ref;
-                      actualId = snapshot.docs[0].id;
-                    } else {
-                      const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
-                      setOrders(updatedOrders);
-                      localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
-                      showNotification("Status pesanan berhasil diperbarui (Lokal)");
-                      return;
-                    }
-                  }
-
-                  await updateDoc(orderRef, { status });
-                  const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
-                  setOrders(updatedOrders);
-                  localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
-                  showNotification("Status pesanan berhasil diperbarui");
-                } catch (err: any) {
-                  console.error("Error updating order:", err);
-                  const errorCode = err.code || "unknown";
-                  
-                  if (errorCode === 'permission-denied' || errorCode === 'not-found') {
-                    const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
-                    setOrders(updatedOrders);
-                    localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
-                    showNotification(`Status pesanan diperbarui secara lokal (${errorCode === 'permission-denied' ? 'Akses Dibatasi' : 'Data Cloud Tidak Ditemukan'})`);
-                  } else {
-                    showNotification(`Gagal memperbarui: ${err.message || errorCode}`);
-                  }
-                }
-              } else {
-                const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, status } : o);
-                setOrders(updatedOrders);
-                localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
-                showNotification("Status pesanan berhasil diperbarui (Mode Lokal)");
-              }
-            }}
-            onDeleteOrder={async (orderIds) => {
-              const idsToDelete = Array.isArray(orderIds) ? orderIds : [orderIds];
-              
-              const deleteLocally = () => {
-                setOrders(prev => {
-                  const final = prev.filter(o => !idsToDelete.includes(String(o.id)) && !idsToDelete.includes(o.firebaseKey || ''));
-                  localStorage.setItem('app_orders', JSON.stringify(final));
-                  return final;
-                });
-              };
-
-              if (isFirebaseConfigured) {
-                try {
-                  const batch = writeBatch(db);
-                  let hasFirestoreOrders = false;
-                  idsToDelete.forEach(orderId => {
-                    const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
-                    if (order?.firebaseKey) {
-                      batch.delete(doc(db, 'orders', String(order.firebaseKey)));
-                      hasFirestoreOrders = true;
-                    }
-                  });
-                  if (hasFirestoreOrders) {
-                    await batch.commit();
-                  }
-                  deleteLocally();
-                  showNotification("Riwayat pesanan berhasil dihapus");
-                } catch (err: any) {
-                  console.error("Error deleting order:", err);
-                  // Even if Firestore fails, we should allow local deletion for the user
-                  deleteLocally();
-                  if (err.code === 'permission-denied') {
-                    showNotification("Pesanan dihapus secara lokal (Akses Cloud Dibatasi)");
-                  } else {
-                    showNotification("Pesanan dihapus secara lokal (Cloud Error)");
-                  }
-                }
-              } else {
-                deleteLocally();
-                showNotification("Riwayat pesanan berhasil dihapus");
-              }
-            }}
-            onEditOrder={async (orderId, updatedData) => {
-              const order = orders.find(o => String(o.id) === String(orderId) || o.firebaseKey === orderId);
-              const actualId = String(order?.firebaseKey || orderId);
-              if (isFirebaseConfigured) {
-                try {
-                  const orderRef = doc(db, 'orders', actualId);
-                  await updateDoc(orderRef, updatedData);
-                  showNotification("Pesanan berhasil diperbarui");
-                } catch (err: any) {
-                  console.error("Error editing order:", err);
-                  if (err.code === 'permission-denied' || err.message?.toLowerCase().includes('permission-denied') || err.message?.toLowerCase().includes('insufficient permissions')) {
-                    showNotification("Akses ditolak: Anda harus login sebagai owner yang terverifikasi.");
-                  } else if (err.code === 'not-found' || err.message?.includes('not-found')) {
-                    console.log("Order not found in Firestore, updating locally");
-                    const updatedOrders = orders.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, ...updatedData } : o);
-                    setOrders(updatedOrders);
-                    localStorage.setItem('app_orders', JSON.stringify(updatedOrders));
-                    showNotification("Pesanan berhasil diperbarui (Lokal)");
-                  } else {
-                    showNotification("Gagal memperbarui pesanan: " + (err.message || "Error tidak diketahui"));
-                  }
-                  handleFirestoreError(err, OperationType.WRITE, 'orders');
-                }
-              } else {
-                setOrders(prev => {
-                  const final = prev.map(o => (String(o.id) === String(orderId) || o.firebaseKey === orderId) ? { ...o, ...updatedData } : o);
-                  localStorage.setItem('app_orders', JSON.stringify(final));
-                  return final;
-                });
-                showNotification("Pesanan berhasil diperbarui");
-              }
-            }}
+            onUpdateOrderStatus={handleUpdateOrderStatus}
+            onDeleteOrder={handleDeleteOrder}
+            onRestoreOrder={handleRestoreOrder}
+            onPermanentDelete={handlePermanentDelete}
+            onEditOrder={handleEditOrder}
             customerName={currentUser?.displayName || customerName}
             customerEmail={currentUser?.email || customerEmail}
             currentUser={currentUser}
@@ -1962,6 +1946,8 @@ export default function App() {
             updatingOrderId={updatingOrderId}
             setUpdatingOrderId={setUpdatingOrderId}
             isAuthReady={isAuthReady}
+            dismissedNotifs={dismissedNotifs}
+            onDismissNotif={handleDismissNotif}
           />
         )}
         
@@ -2060,6 +2046,8 @@ export default function App() {
             feedbacks={feedbacks}
             isFirebaseConfigured={isFirebaseConfigured}
             setUserRole={setUserRole}
+            dismissedNotifs={dismissedNotifs}
+            onDismissNotif={handleDismissNotif}
           />
         )}
         {view === 'detail' && (
@@ -2235,11 +2223,12 @@ function OwnerScreen({
   inventory, totalRevenue, revenueToday, totalOrders, orders, feedbacks,
   onUpdateStock, onUpdateItem, onDeleteItem, onAddItem, 
   onRestoreDefaults, onLogout, onSwitchToCustomer, 
-  onUpdateOrderStatus, onDeleteOrder, onEditOrder, onOwnerLogin,
+  onUpdateOrderStatus, onDeleteOrder, onRestoreOrder, onPermanentDelete, onEditOrder, onOwnerLogin,
   setOrders, setFeedbacks, isFirebaseConfigured, isResettingData, setIsResettingData,
   isPerformingReset, setIsPerformingReset,
   customerName, customerEmail, currentUser, showNotification,
-  ownerSubView, setOwnerSubView, updatingOrderId, setUpdatingOrderId, isAuthReady
+  ownerSubView, setOwnerSubView, updatingOrderId, setUpdatingOrderId, isAuthReady,
+  dismissedNotifs, onDismissNotif
 }: { 
   inventory: any[], totalRevenue: number, revenueToday: number, totalOrders: number, orders: Order[], feedbacks: AppFeedback[],
   onUpdateStock: (id: number, stock: number) => void, onUpdateItem: (item: any) => void, 
@@ -2247,6 +2236,8 @@ function OwnerScreen({
   onRestoreDefaults: () => void, onLogout: () => void, onSwitchToCustomer: () => void, 
   onUpdateOrderStatus: (orderId: string, status: 'diterima' | 'dimasak' | 'diantar' | 'selesai') => void, 
   onDeleteOrder: (orderId: string | string[]) => void, 
+  onRestoreOrder: (orderId: string) => void,
+  onPermanentDelete: (orderId: string) => void,
   onEditOrder: (orderId: string, data: any) => void, 
   onOwnerLogin: () => void,
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>, 
@@ -2257,11 +2248,12 @@ function OwnerScreen({
   customerName: string, customerEmail: string, currentUser: any, showNotification: (msg: string) => void,
   ownerSubView: string | null, setOwnerSubView: (v: string | null) => void,
   updatingOrderId: string | null, setUpdatingOrderId: React.Dispatch<React.SetStateAction<string | null>>,
-  isAuthReady: boolean
+  isAuthReady: boolean,
+  dismissedNotifs: string[], onDismissNotif: (id: string) => void
 }) {
   console.log("OwnerScreen rendering");
 
-  const [activeTab, setActiveTab] = useState<'beranda' | 'laporan' | 'stok' | 'pengaturan' | 'rating'>(() => {
+  const [activeTab, setActiveTab] = useState<'beranda' | 'laporan' | 'stok' | 'pengaturan' | 'rating' | 'sampah'>(() => {
     return (getLocalStorageItem('owner_active_tab', 'beranda') as any);
   });
 
@@ -2270,6 +2262,7 @@ function OwnerScreen({
   }, [activeTab]);
 
   const [viewDetail, setViewDetail] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any | null>(null);
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
@@ -2362,7 +2355,7 @@ function OwnerScreen({
 
   // Calculate total profit based on HPP
   const totalProfit = useMemo(() => {
-    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan' && !o.isDeleted);
     return validOrders.reduce((totalProfit, order) => {
       if (order.isManual) {
         return totalProfit + (order.manualProfit || 0);
@@ -2380,7 +2373,7 @@ function OwnerScreen({
   }, [orders]);
 
   const filteredReportData = useMemo(() => {
-    const validOrders = orders.filter(o => o.status !== 'dibatalkan');
+    const validOrders = orders.filter(o => o.status !== 'dibatalkan' && !o.isDeleted);
     const [year, month, day] = reportFilterDate.split('-').map(Number);
     const selectedDate = new Date(year, month - 1, day);
     
@@ -2485,7 +2478,7 @@ function OwnerScreen({
     const revenue = filteredOrders.reduce((sum, order) => sum + order.total, 0);
     const profit = filteredOrders.reduce((sum, order) => sum + order.calculatedProfit, 0);
     
-    const realOrdersCount = filteredOrders.filter(o => !o.id.startsWith('ADJ-')).length;
+    const realOrdersCount = filteredOrders.filter(o => !String(o.id).startsWith('ADJ-')).length;
     
     return { revenue, profit, chartData, ordersCount: realOrdersCount };
   }, [orders, reportFilterType, reportFilterDate, reportFilterMenu]);
@@ -3041,6 +3034,7 @@ function OwnerScreen({
       
       const monthSales = orders.filter(o => 
         o.status !== 'dibatalkan' &&
+        !o.isDeleted &&
         o.timestamp.getMonth() === monthIdx && 
         o.timestamp.getFullYear() === year
       ).reduce((sum, order) => sum + order.total, 0);
@@ -3196,8 +3190,87 @@ function OwnerScreen({
             <span className="text-[8px] font-bold text-red-500 uppercase tracking-widest">Live</span>
           </div>
         </div>
-        <div className="h-9 w-9" /> {/* Placeholder for balance */}
+        <button 
+          onClick={() => setIsNotificationsOpen(true)}
+          className="h-9 w-9 bg-white rounded-full flex items-center justify-center shadow-sm border border-[#3D2B1F]/5 relative"
+        >
+          <Bell size={18} className="text-[#3D2B1F]" />
+          {orders.filter(o => !o.isDeleted && !dismissedNotifs.includes(String(o.id))).length > 0 && (
+            <div className="absolute top-2 right-2 h-2 w-2 bg-red-500 rounded-full"></div>
+          )}
+        </button>
       </div>
+
+      <AnimatePresence>
+        {isNotificationsOpen && (
+          <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center p-0 sm:p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsNotificationsOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, y: '100%' }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: '100%' }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="relative w-full max-w-md bg-[#F5F2EA] rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+            >
+              <div className="p-6 bg-white flex justify-between items-center border-b border-[#3D2B1F]/5">
+                <h3 className="text-xl font-bold text-[#3D2B1F]">Notifikasi</h3>
+                <button 
+                  onClick={() => setIsNotificationsOpen(false)}
+                  className="h-8 w-8 bg-stone-100 rounded-full flex items-center justify-center text-[#3D2B1F]/60 hover:bg-stone-200"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto flex-1">
+                {/* Welcome Notification */}
+                <div className="mb-4 p-4 bg-white rounded-2xl shadow-sm border border-[#3D2B1F]/5">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="text-xs font-bold text-orange-500 uppercase tracking-widest">Sistem</span>
+                    <span className="text-[10px] text-[#3D2B1F]/40">Baru saja</span>
+                  </div>
+                  <p className="text-sm font-bold text-[#3D2B1F] mb-1">Selamat datang di Dashboard Owner!</p>
+                  <p className="text-xs text-[#3D2B1F]/60">Pantau pesanan masuk secara real-time di sini.</p>
+                </div>
+
+                {orders.filter(o => !o.isDeleted && !dismissedNotifs.includes(String(o.id))).slice(0, 15).map(order => {
+                  const title = `Pesanan Baru #${order.orderNumber || String(order.id).slice(-4).toUpperCase()}`;
+                  const message = `Pelanggan ${order.customerName} baru saja memesan ${order.items.length} item.`;
+
+                  return (
+                    <div key={order.id} className="mb-4 p-4 bg-white rounded-2xl shadow-sm border border-[#3D2B1F]/5 relative group">
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-xs font-bold text-[#3D2B1F]/60 uppercase tracking-widest">{title}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-[#3D2B1F]/40">
+                            {order.timestamp instanceof Date ? order.timestamp.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}) : 'Baru saja'}
+                          </span>
+                          <button 
+                            onClick={() => onDismissNotif(String(order.id))}
+                            className="text-[#3D2B1F]/20 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-sm font-bold text-[#3D2B1F] mb-1 pr-6">{message}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className={`h-1.5 w-1.5 rounded-full ${order.status === 'selesai' ? 'bg-green-500' : 'bg-orange-500 animate-pulse'}`}></div>
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">{order.status}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {editingOrder && (
@@ -3313,6 +3386,7 @@ function OwnerScreen({
                   { id: 'laporan', label: 'Laporan', icon: BarChart3 },
                   { id: 'stok', label: 'Stok', icon: Package },
                   { id: 'rating', label: 'Rating', icon: Star },
+                  { id: 'sampah', label: 'Tempat Sampah', icon: Trash2 },
                   { id: 'pengaturan', label: 'Profile', icon: User },
                 ].map((menu) => (
                   <button 
@@ -3364,7 +3438,7 @@ function OwnerScreen({
                 <div>
                   <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest mb-1">Total Pesanan Aktif</p>
                   <p className="text-3xl font-bold text-[#3D2B1F]">
-                    {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan').length}
+                    {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan' && !o.isDeleted).length}
                   </p>
                 </div>
                 <div className="h-10 w-10 mt-4 rounded-xl bg-[#3D2B1F]/5 flex items-center justify-center text-[#3D2B1F]">
@@ -3377,7 +3451,7 @@ function OwnerScreen({
                   <p className="text-3xl font-bold text-[#3D2B1F]">
                     {orders.filter(o => {
                       const today = new Date().toDateString();
-                      return new Date(o.timestamp).toDateString() === today;
+                      return new Date(o.timestamp).toDateString() === today && !o.isDeleted;
                     }).length}
                   </p>
                 </div>
@@ -3388,16 +3462,16 @@ function OwnerScreen({
             </div>
 
             {/* Active Orders Section */}
-            {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan').length > 0 && (
+            {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan' && !o.isDeleted).length > 0 && (
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-bold text-[#3D2B1F]">Pesanan Masuk (Aktif)</h3>
                   <span className="bg-orange-100 text-orange-600 text-[10px] font-bold px-3 py-1 rounded-full">
-                    {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan').length} Pesanan
+                    {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan' && !o.isDeleted).length} Pesanan
                   </span>
                 </div>
                 <div className="space-y-3">
-                  {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan').map((order, idx) => (
+                  {orders.filter(o => o.status !== 'selesai' && o.status !== 'dibatalkan' && !o.isDeleted).map((order, idx) => (
                     <div key={order.firebaseKey || `${order.id}-${order.sessionId || idx}`} className="bg-white p-6 rounded-[2rem] border border-[#3D2B1F]/5 shadow-sm flex flex-col gap-4 min-h-[250px]">
                       <div className="flex flex-col items-center border-b border-[#3D2B1F]/5 pb-3">
                         <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">NOTA PESANAN</p>
@@ -3557,12 +3631,12 @@ function OwnerScreen({
               <div className="flex items-center justify-between mb-4 px-2">
                 <h3 className="font-bold text-[#3D2B1F]">Pesanan Selesai Hari Ini</h3>
                 <span className="bg-green-100 text-green-600 text-[10px] font-bold px-3 py-1 rounded-full">
-                  {orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString()).length} Selesai
+                  {orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString() && !o.isDeleted).length} Selesai
                 </span>
               </div>
               
               <div className="space-y-4">
-                {orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString()).length === 0 ? (
+                {orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString() && !o.isDeleted).length === 0 ? (
                   <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-[#3D2B1F]/5 flex flex-col items-center justify-center text-center">
                     <div className="h-16 w-16 rounded-full bg-[#3D2B1F]/5 flex items-center justify-center text-[#3D2B1F]/20 mb-3">
                       <CheckCircle size={32} />
@@ -3570,7 +3644,7 @@ function OwnerScreen({
                     <p className="text-sm text-[#3D2B1F]/40">Belum ada pesanan selesai hari ini.</p>
                   </div>
                 ) : (
-                  orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString()).map((order, idx) => (
+                  orders.filter(o => o.status === 'selesai' && o.timestamp.toDateString() === new Date().toDateString() && !o.isDeleted).map((order, idx) => (
                     <div key={order.firebaseKey || `${order.id}-${order.sessionId || idx}`} className="bg-white p-6 rounded-[2rem] shadow-sm border border-[#3D2B1F]/5 flex flex-col gap-4">
                       <div className="flex flex-col items-center border-b border-[#3D2B1F]/5 pb-3">
                         <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">NOTA PESANAN</p>
@@ -4434,6 +4508,75 @@ function OwnerScreen({
           </div>
         )}
 
+        {activeTab === 'sampah' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between px-2">
+              <h3 className="text-xl font-bold text-[#3D2B1F]">Tempat Sampah</h3>
+              <span className="bg-stone-100 text-[#3D2B1F]/60 text-[10px] font-bold px-3 py-1 rounded-full">
+                {orders.filter(o => o.isDeleted).length} Item
+              </span>
+            </div>
+
+            <div className="space-y-4">
+              {orders.filter(o => o.isDeleted).length === 0 ? (
+                <div className="bg-white p-12 rounded-[2.5rem] shadow-sm border border-[#3D2B1F]/5 flex flex-col items-center justify-center text-center">
+                  <div className="h-20 w-20 rounded-full bg-[#3D2B1F]/5 flex items-center justify-center text-[#3D2B1F]/10 mb-4">
+                    <Trash2 size={40} />
+                  </div>
+                  <h4 className="text-lg font-bold text-[#3D2B1F] mb-1">Tempat Sampah Kosong</h4>
+                  <p className="text-sm text-[#3D2B1F]/40">Pesanan yang Anda hapus akan muncul di sini.</p>
+                </div>
+              ) : (
+                orders.filter(o => o.isDeleted).map((order, idx) => (
+                  <div key={order.firebaseKey || `${order.id}-${idx}`} className="bg-white p-6 rounded-[2rem] shadow-sm border border-[#3D2B1F]/5 flex flex-col gap-4 opacity-80">
+                    <div className="flex items-center justify-between border-b border-[#3D2B1F]/5 pb-3">
+                      <div>
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">NOTA PESANAN</p>
+                        <p className="text-lg font-bold text-[#3D2B1F]">#{order.orderNumber || order.id.toString().slice(-4).toUpperCase()}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">TANGGAL</p>
+                        <p className="text-xs font-bold text-[#3D2B1F]">{order.timestamp.toLocaleDateString('id-ID')}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start justify-between border-b border-[#3D2B1F]/5 pb-3">
+                      <div>
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">PELANGGAN</p>
+                        <p className="font-bold text-[#3D2B1F]">{order.customerName}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">TOTAL</p>
+                        <p className="font-bold text-[#3D2B1F]">Rp {order.total.toLocaleString()}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button 
+                        onClick={() => onRestoreOrder(order.firebaseKey || order.id)}
+                        className="flex-1 bg-green-600 text-white text-xs font-bold py-3.5 rounded-xl shadow-md hover:bg-green-700 transition-all flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw size={14} />
+                        Pulihkan
+                      </button>
+                      <button 
+                        onClick={() => {
+                          if (window.confirm("Hapus pesanan ini secara permanen? Tindakan ini tidak dapat dibatalkan.")) {
+                            onPermanentDelete(order.firebaseKey || order.id);
+                          }
+                        }}
+                        className="flex-1 bg-red-50 text-red-600 text-xs font-bold py-3.5 rounded-xl border border-red-100 hover:bg-red-100 transition-all flex items-center justify-center gap-2"
+                      >
+                        <Trash2 size={14} />
+                        Hapus Permanen
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
         {activeTab === 'pengaturan' && (
           <div className="space-y-4">
             <div className="flex items-center gap-3 mb-4">
@@ -4475,7 +4618,7 @@ function OwnerScreen({
                   onClick={() => {
                     setIsResettingData(true);
                   }}
-                  className="w-full py-4 rounded-xl bg-red-50 text-red-600 font-bold flex items-center justify-center gap-2 hover:bg-red-100 transition-colors cursor-pointer relative z-50"
+                  className="w-full py-4 rounded-xl bg-red-50 text-red-600 font-bold flex items-center justify-center gap-2 hover:bg-red-100 transition-colors cursor-pointer"
                 >
                   <Trash2 size={20} /> Reset Semua Data
                 </button>
@@ -5090,33 +5233,58 @@ function OwnerScreen({
                       setIsPerformingReset(true);
                       if (isFirebaseConfigured) {
                         // Reset Orders from Firestore
-                        const q = query(collection(db, 'orders'));
-                        const snapshot = await getDocs(q);
+                        const ordersRef = collection(db, 'orders');
+                        const snapshot = await getDocs(ordersRef);
                         
                         if (!snapshot.empty) {
                           // Firestore batch limit is 500 operations
-                          for (let i = 0; i < snapshot.docs.length; i += 500) {
+                          const docs = snapshot.docs;
+                          for (let i = 0; i < docs.length; i += 500) {
                             const batch = writeBatch(db);
-                            const chunk = snapshot.docs.slice(i, i + 500);
-                            chunk.forEach(doc => {
-                              batch.delete(doc.ref);
+                            const chunk = docs.slice(i, i + 500);
+                            chunk.forEach(docSnap => {
+                              batch.delete(docSnap.ref);
+                            });
+                            await batch.commit();
+                          }
+                        }
+
+                        // Also reset feedbacks
+                        const feedbacksRef = collection(db, 'app_feedback');
+                        const fSnapshot = await getDocs(feedbacksRef);
+                        if (!fSnapshot.empty) {
+                          const fDocs = fSnapshot.docs;
+                          for (let i = 0; i < fDocs.length; i += 500) {
+                            const batch = writeBatch(db);
+                            const chunk = fDocs.slice(i, i + 500);
+                            chunk.forEach(docSnap => {
+                              batch.delete(docSnap.ref);
                             });
                             await batch.commit();
                           }
                         }
                       }
                       
+                      // Clear local storage
                       localStorage.removeItem('app_orders');
+                      localStorage.removeItem('app_feedbacks');
+                      localStorage.removeItem('app_notified_orders');
+                      
+                      // Update local state
                       setOrders([]);
-                      showNotification("Semua data pesanan berhasil direset.");
+                      setFeedbacks([]);
+                      
+                      showNotification("Semua data berhasil direset.");
                       setIsResettingData(false);
                     } catch (err: any) {
                       console.error("Error resetting data:", err);
-                      if (err.code === 'permission-denied') {
-                        showNotification("Gagal: Akses ditolak (Hanya Owner)");
-                      } else {
-                        showNotification("Gagal mereset data: " + (err.message || "Error"));
+                      // Use the required error handling pattern
+                      try {
+                        handleFirestoreError(err, OperationType.DELETE, 'orders/feedbacks');
+                      } catch (e) {
+                        // If handleFirestoreError throws, we still want to show a notification
                       }
+                      showNotification("Gagal mereset data: " + (err.message || "Error"));
                     } finally {
                       setIsPerformingReset(false);
                     }
@@ -5349,15 +5517,18 @@ function HomeScreen({
   activeTab, setActiveTab, activeCategory, setActiveCategory, searchQuery, setSearchQuery,
   onAddressChange, onViewOrders, cart, onLogout, onLogin, onOwnerLogin, currentUser, userRole, onOpenOwnerDashboard, onUpdateProfile, orders, onBackToWelcome,
   onRemoveFromCart, onEditCartItem, onRateOrder, onDeleteOrder,
-  ownerSubView, setOwnerSubView, feedbacks, isFirebaseConfigured, setUserRole
+  ownerSubView, setOwnerSubView, feedbacks, isFirebaseConfigured, setUserRole,
+  dismissedNotifs, onDismissNotif
 }: { 
   address: string, addresses: any[], setAddresses: React.Dispatch<React.SetStateAction<any[]>>, customerName: string, customerPhone: string, customerEmail: string, onCheckout: () => void, onSelectItem: (item: any) => void, hasActiveOrder: boolean, 
   activeTab: string, setActiveTab: (t: string) => void, activeCategory: string, setActiveCategory: (c: string) => void, searchQuery: string, setSearchQuery: (q: string) => void,
   onAddressChange: (addr: string) => void, onViewOrders?: () => void, cart?: CartItem[], onLogout?: () => void, onLogin?: () => void, onOwnerLogin?: () => void, currentUser?: any, userRole?: 'guest' | 'customer' | 'owner', onOpenOwnerDashboard?: () => void, onUpdateProfile?: (name: string, phone: string, email: string) => void, orders: Order[], onBackToWelcome: () => void,
   onRemoveFromCart?: (index: number) => void, onEditCartItem?: (index: number, updatedItem: CartItem) => void, onRateOrder?: (orderId: string, rating: number, feedback: string) => void, onDeleteOrder?: (orderId: string | string[]) => void,
-  ownerSubView: string | null, setOwnerSubView: (v: string | null) => void, feedbacks: AppFeedback[], isFirebaseConfigured: boolean, setUserRole: (role: 'guest' | 'customer' | 'owner') => void
+  ownerSubView: string | null, setOwnerSubView: (v: string | null) => void, feedbacks: AppFeedback[], isFirebaseConfigured: boolean, setUserRole: (role: 'guest' | 'customer' | 'owner') => void,
+  dismissedNotifs: string[], onDismissNotif: (id: string) => void
 }) {
   const [notification, setNotification] = useState<string | null>(null);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [profileSubView, setProfileSubView] = useState<string | null>(() => {
     return localStorage.getItem('app_profileSubView') || null;
   });
@@ -5501,8 +5672,18 @@ function HomeScreen({
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <button className="h-12 w-12 rounded-full bg-white flex items-center justify-center shadow-sm border border-[#3D2B1F]/5">
+              <button 
+                onClick={() => setIsNotificationsOpen(true)}
+                className="h-12 w-12 rounded-full bg-white flex items-center justify-center shadow-sm border border-[#3D2B1F]/5 relative"
+              >
                 <Bell size={20} />
+                {orders.filter(o => {
+                  if (dismissedNotifs.includes(String(o.id))) return false;
+                  if (userRole === 'owner') return !o.isDeleted;
+                  return o.customerName === customerName || (currentUser && o.uid === currentUser.uid);
+                }).length > 0 && (
+                  <div className="absolute top-3 right-3 h-2 w-2 bg-red-500 rounded-full"></div>
+                )}
               </button>
               <div 
                 className="h-12 w-12 rounded-full overflow-hidden border-2 border-white shadow-md cursor-pointer"
@@ -6207,6 +6388,98 @@ function HomeScreen({
           <span className="text-[10px] font-bold uppercase tracking-widest">Profile</span>
         </button>
       </div>
+
+      {/* Notifications Modal */}
+      <AnimatePresence>
+        {isNotificationsOpen && (
+          <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center p-0 sm:p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsNotificationsOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, y: '100%' }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: '100%' }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="relative w-full max-w-md bg-[#F5F2EA] rounded-t-[2rem] sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+            >
+              <div className="p-6 bg-white flex justify-between items-center border-b border-[#3D2B1F]/5">
+                <h3 className="text-xl font-bold text-[#3D2B1F]">Notifikasi</h3>
+                <button 
+                  onClick={() => setIsNotificationsOpen(false)}
+                  className="h-8 w-8 bg-stone-100 rounded-full flex items-center justify-center text-[#3D2B1F]/60 hover:bg-stone-200"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto flex-1">
+                {/* Welcome Notification */}
+                <div className="mb-4 p-4 bg-white rounded-2xl shadow-sm border border-[#3D2B1F]/5">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="text-xs font-bold text-orange-500 uppercase tracking-widest">Sistem</span>
+                    <span className="text-[10px] text-[#3D2B1F]/40">Baru saja</span>
+                  </div>
+                  <p className="text-sm font-bold text-[#3D2B1F] mb-1">Selamat datang di Indomi Nite!</p>
+                  <p className="text-xs text-[#3D2B1F]/60">Nikmati menu spesial kami dan pantau status pesananmu di sini.</p>
+                </div>
+
+                {orders.filter(o => {
+                  if (dismissedNotifs.includes(String(o.id))) return false;
+                  if (userRole === 'owner') return !o.isDeleted;
+                  return o.customerName === customerName || (currentUser && o.uid === currentUser.uid);
+                }).slice(0, 15).map(order => {
+                  const isOwner = userRole === 'owner';
+                  let title = "";
+                  let message = "";
+                  
+                  if (isOwner) {
+                    title = `Pesanan Baru #${order.orderNumber || String(order.id).slice(-4).toUpperCase()}`;
+                    message = `Pelanggan ${order.customerName} baru saja memesan ${order.items.length} item.`;
+                  } else {
+                    title = `Update Pesanan #${order.orderNumber || String(order.id).slice(-4).toUpperCase()}`;
+                    switch(order.status) {
+                      case 'diterima': message = "Pesananmu sudah kami terima dan masuk antrean."; break;
+                      case 'dimasak': message = "Koki kami sedang menyiapkan pesanan lezatmu."; break;
+                      case 'diantar': message = "Pesananmu sedang dalam perjalanan menuju lokasimu."; break;
+                      case 'selesai': message = "Pesanan selesai! Selamat menikmati hidangan kami."; break;
+                      case 'dibatalkan': message = "Maaf, pesananmu telah dibatalkan."; break;
+                      default: message = `Status pesananmu saat ini adalah ${order.status}.`;
+                    }
+                  }
+
+                  return (
+                    <div key={order.id} className="mb-4 p-4 bg-white rounded-2xl shadow-sm border border-[#3D2B1F]/5 relative group">
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-xs font-bold text-[#3D2B1F]/60 uppercase tracking-widest">{title}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-[#3D2B1F]/40">
+                            {order.timestamp instanceof Date ? order.timestamp.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}) : 'Baru saja'}
+                          </span>
+                          <button 
+                            onClick={() => onDismissNotif(String(order.id))}
+                            className="text-[#3D2B1F]/20 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-sm font-bold text-[#3D2B1F] mb-1 pr-6">{message}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className={`h-1.5 w-1.5 rounded-full ${order.status === 'selesai' ? 'bg-green-500' : 'bg-orange-500 animate-pulse'}`}></div>
+                        <p className="text-[10px] font-bold text-[#3D2B1F]/40 uppercase tracking-widest">{order.status}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -7007,6 +7280,7 @@ function EditCartItemModal({
       ];
 
   const isSnack = item.categories.includes('Snack');
+  const isTelurGulung = item.name === 'Telur Gulung' || item.name === 'Telur Gulung Sosis';
 
   const addTopping = (name: string) => {
     setSelectedToppings(prev => [...prev, name]);
@@ -7076,37 +7350,58 @@ function EditCartItemModal({
           </div>
         </div>
 
-        {!isSnack && toppings.length > 0 && (
+        {(!isSnack || isTelurGulung) && toppings.length > 0 && (
           <div className="mb-6">
             <h4 className="font-bold text-[#3D2B1F] mb-3">Add-on</h4>
             <div className="space-y-3">
-              {toppings.map((topping, idx) => (
+              {toppings.map((topping, idx) => {
+                const count = getToppingCount(topping.name);
+                return (
                 <div key={idx} className="flex items-center justify-between p-3 rounded-2xl border border-[#3D2B1F]/10">
                   <div>
                     <p className="font-bold text-[#3D2B1F]">{topping.name}</p>
                     {topping.price > 0 && <p className="text-xs text-[#3D2B1F]/60">+ Rp {topping.price.toLocaleString()}</p>}
                   </div>
                   <div className="flex items-center gap-3">
-                    {getToppingCount(topping.name) > 0 && (
+                    {isTelurGulung ? (
                       <button 
-                        onClick={() => removeTopping(topping.name)}
-                        className="h-8 w-8 rounded-full bg-stone-100 flex items-center justify-center text-[#3D2B1F]"
+                        type="button"
+                        onClick={(e) => { 
+                          e.stopPropagation(); 
+                          if (count > 0) {
+                            removeTopping(topping.name);
+                          } else {
+                            addTopping(topping.name);
+                          }
+                        }}
+                        className={`h-8 w-8 rounded-xl flex items-center justify-center border-2 transition-all ${count > 0 ? 'bg-[#3D2B1F] border-[#3D2B1F] text-white' : 'border-[#3D2B1F]/20 text-transparent'}`}
                       >
-                        <Minus size={14} />
+                        <Check size={16} />
                       </button>
+                    ) : (
+                      <>
+                        {count > 0 && (
+                          <button 
+                            onClick={() => removeTopping(topping.name)}
+                            className="h-8 w-8 rounded-full bg-stone-100 flex items-center justify-center text-[#3D2B1F]"
+                          >
+                            <Minus size={14} />
+                          </button>
+                        )}
+                        {count > 0 && (
+                          <span className="font-bold text-[#3D2B1F] w-4 text-center">{count}</span>
+                        )}
+                        <button 
+                          onClick={() => addTopping(topping.name)}
+                          className="h-8 w-8 rounded-full bg-[#3D2B1F] flex items-center justify-center text-white"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </>
                     )}
-                    {getToppingCount(topping.name) > 0 && (
-                      <span className="font-bold text-[#3D2B1F] w-4 text-center">{getToppingCount(topping.name)}</span>
-                    )}
-                    <button 
-                      onClick={() => addTopping(topping.name)}
-                      className="h-8 w-8 rounded-full bg-[#3D2B1F] flex items-center justify-center text-white"
-                    >
-                      <Plus size={14} />
-                    </button>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
         )}
